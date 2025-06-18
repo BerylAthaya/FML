@@ -5,94 +5,86 @@ import onnxruntime as ort
 import os
 
 # Konfigurasi
-st.set_page_config(page_title="Deteksi Ekspresi Wajah ONNX", page_icon="😊")
+st.set_page_config(page_title="Deteksi Ekspresi Wajah", page_icon="😊")
 
-# Inisialisasi ONNX Runtime
 @st.cache_resource
-def load_onnx_model():
+def load_model():
     try:
-        sess = ort.InferenceSession('emotion_model.onnx')
-        return sess
+        return ort.InferenceSession('emotion_model.onnx')
     except Exception as e:
-        st.error(f"Gagal memuat model ONNX: {str(e)}")
+        st.error(f"Gagal memuat model: {str(e)}")
         st.stop()
 
-# Load Haar Cascade
 @st.cache_resource
-def load_haar_cascade():
+def load_cascade():
     try:
-        face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
-        return face_cascade
+        return cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
     except Exception as e:
         st.error(f"Gagal memuat Haar Cascade: {str(e)}")
         st.stop()
 
-# Periksa file yang diperlukan
-if not os.path.exists('emotion_model.onnx'):
-    st.error("File model ONNX tidak ditemukan!")
-    st.stop()
-
-if not os.path.exists('haarcascade_frontalface_default.xml'):
-    st.error("File Haar Cascade tidak ditemukan!")
+# Periksa file
+if not all(os.path.exists(f) for f in ['emotion_model.onnx', 'haarcascade_frontalface_default.xml']):
+    st.error("File model atau Haar Cascade tidak ditemukan!")
     st.stop()
 
 # Muat model dan cascade
-ort_session = load_onnx_model()
-face_cascade = load_haar_cascade()
+model = load_model()
+face_cascade = load_cascade()
 
 # Label emosi
-emotion_labels = ['Marah', 'Jijik', 'Takut', 'Senang', 'Sedih', 'Terkejut', 'Netral']
+emotions = ['Marah', 'Jijik', 'Takut', 'Senang', 'Sedih', 'Terkejut', 'Netral']
 
-# Antarmuka Streamlit
-st.title("Deteksi Ekspresi Wajah dengan ONNX")
-uploaded_file = st.file_uploader("Upload gambar wajah...", type=["jpg", "jpeg", "png"])
+# UI
+st.title("Deteksi Ekspresi Wajah")
+uploaded_file = st.file_uploader("Pilih gambar wajah...", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
     try:
-        # Baca dan proses gambar
+        # Baca gambar
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         
-        if image is None:
-            st.error("Gagal memproses gambar")
+        if img is None:
+            st.error("Format gambar tidak didukung")
             st.stop()
-        
-        # Konversi ke grayscale
-        gray_img = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
+            
         # Deteksi wajah
-        faces = face_cascade.detectMultiScale(gray_img, 1.1, 4)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
         
         if len(faces) == 0:
-            st.warning("Tidak terdeteksi wajah")
+            st.warning("Wajah tidak terdeteksi")
         else:
             for (x, y, w, h) in faces:
-                # Ekstrak ROI wajah
-                face_roi = gray_img[y:y+h, x:x+w]
-                face_roi = cv2.resize(face_roi, (48, 48))
-                face_roi = face_roi.astype(np.float32) / 255.0
-                face_roi = np.expand_dims(face_roi, axis=(0, -1))  # Shape: (1, 48, 48, 1)
+                # Preprocessing
+                face = gray[y:y+h, x:x+w]
+                face = cv2.resize(face, (48, 48))
+                face = face.astype('float32') / 255.0
+                face = np.expand_dims(face, axis=(0, -1))
                 
-                # Prediksi dengan ONNX Runtime
-                input_name = ort_session.get_inputs()[0].name
-                output_name = ort_session.get_outputs()[0].name
-                pred = ort_session.run([output_name], {input_name: face_roi})[0][0]
+                # Prediksi
+                input_name = model.get_inputs()[0].name
+                outputs = model.run(None, {input_name: face})
+                pred = outputs[0][0]
                 
-                emotion_idx = np.argmax(pred)
-                emotion = emotion_labels[emotion_idx]
-                confidence = pred[emotion_idx]
+                # Hasil
+                emotion = emotions[np.argmax(pred)]
+                confidence = np.max(pred)
                 
                 # Gambar bounding box
-                cv2.rectangle(image, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                cv2.putText(image, f"{emotion} ({confidence:.2f})", 
+                cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                cv2.putText(img, f"{emotion} ({confidence:.2f})", 
                            (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
             
-            st.image(image, channels="BGR", use_column_width=True)
+            # Tampilkan hasil
+            st.image(img, channels="BGR", use_column_width=True)
             
-            # Tampilkan detail prediksi
-            st.subheader("Probabilitas Emosi:")
-            for label, prob in zip(emotion_labels, pred):
-                st.progress(float(prob), text=f"{label}: {prob:.4f}")
+            # Tampilkan detail
+            st.subheader("Detail Prediksi:")
+            for i, (emotion, prob) in enumerate(zip(emotions, pred)):
+                st.write(f"{emotion}: {prob:.4f}")
+                st.progress(float(prob))
                 
     except Exception as e:
         st.error(f"Error: {str(e)}")
