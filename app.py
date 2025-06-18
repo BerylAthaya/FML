@@ -2,133 +2,97 @@ import streamlit as st
 import cv2
 import numpy as np
 import onnxruntime as ort
-from PIL import Image
 import os
 
-# Judul Aplikasi
-st.title("😊 Deteksi Ekspresi Wajah dengan Haar Cascade")
-st.markdown("""
-<style>
-.st-emotion-cache-1kyxreq.e115fcil2 {
-    display: flex;
-    justify-content: center;
-}
-</style>
-""", unsafe_allow_html=True)
+# Konfigurasi
+st.set_page_config(page_title="Deteksi Ekspresi Wajah ONNX", page_icon="😊")
 
-# Load Model dan Haar Cascade
+# Inisialisasi ONNX Runtime
 @st.cache_resource
-def load_models():
-    # Load model ONNX
-    ort_session = ort.InferenceSession("emotion_model.onnx")
-    
-    # Load Haar Cascade
-    cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
-    face_cascade = cv2.CascadeClassifier(cascade_path)
-    
-    return ort_session, face_cascade
+def load_onnx_model():
+    try:
+        sess = ort.InferenceSession('emotion_model.onnx')
+        return sess
+    except Exception as e:
+        st.error(f"Gagal memuat model ONNX: {str(e)}")
+        st.stop()
 
-ort_session, face_cascade = load_models()
-input_name = ort_session.get_inputs()[0].name
+# Load Haar Cascade
+@st.cache_resource
+def load_haar_cascade():
+    try:
+        face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
+        return face_cascade
+    except Exception as e:
+        st.error(f"Gagal memuat Haar Cascade: {str(e)}")
+        st.stop()
 
-# Label Emosi
+# Periksa file yang diperlukan
+if not os.path.exists('emotion_model.onnx'):
+    st.error("File model ONNX tidak ditemukan!")
+    st.stop()
+
+if not os.path.exists('haarcascade_frontalface_default.xml'):
+    st.error("File Haar Cascade tidak ditemukan!")
+    st.stop()
+
+# Muat model dan cascade
+ort_session = load_onnx_model()
+face_cascade = load_haar_cascade()
+
+# Label emosi
 emotion_labels = ['Marah', 'Jijik', 'Takut', 'Senang', 'Sedih', 'Terkejut', 'Netral']
 
-# Fungsi Deteksi Wajah + Prediksi
-def detect_and_predict(image):
-    # Konversi ke grayscale untuk Haar Cascade
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    # Deteksi wajah
-    faces = face_cascade.detectMultiScale(
-        gray,
-        scaleFactor=1.1,
-        minNeighbors=5,
-        minSize=(30, 30)
-    
-    results = []
-    for (x, y, w, h) in faces:
-        # Crop wajah
-        face_roi = gray[y:y+h, x:x+w]
-        
-        # Preprocess untuk model ONNX
-        face_processed = cv2.resize(face_roi, (48, 48))
-        face_processed = face_processed / 255.0
-        face_processed = np.expand_dims(face_processed, axis=(0, -1)).astype(np.float32)
-        
-        # Prediksi emosi
-        outputs = ort_session.run(None, {input_name: face_processed})
-        emotion_idx = np.argmax(outputs[0])
-        confidence = np.max(outputs[0])
-        
-        # Gambar bounding box dan label
-        cv2.rectangle(image, (x, y), (x+w, y+h), (0, 255, 0), 2)
-        cv2.putText(image, 
-                   f"{emotion_labels[emotion_idx]} ({confidence*100:.1f}%)", 
-                   (x, y-10), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 
-                   0.9, (0, 255, 0), 2)
-        
-        results.append({
-            "bbox": (x, y, w, h),
-            "emotion": emotion_labels[emotion_idx],
-            "confidence": confidence
-        })
-    
-    return image, results
+# Antarmuka Streamlit
+st.title("Deteksi Ekspresi Wajah dengan ONNX")
+uploaded_file = st.file_uploader("Upload gambar wajah...", type=["jpg", "jpeg", "png"])
 
-# Pilihan Input
-option = st.radio("Pilih Mode Input:", ("Upload Gambar", "Gunakan Webcam"), horizontal=True)
-
-if option == "Upload Gambar":
-    uploaded_file = st.file_uploader("Upload gambar wajah...", type=["jpg", "png", "jpeg"])
-    
-    if uploaded_file is not None:
-        image = np.array(Image.open(uploaded_file).convert("RGB"))
-        st.image(image, caption="Gambar Original", use_column_width=True)
+if uploaded_file is not None:
+    try:
+        # Baca dan proses gambar
+        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         
-        # Proses deteksi
-        processed_img, results = detect_and_predict(image.copy())
+        if image is None:
+            st.error("Gagal memproses gambar")
+            st.stop()
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.image(processed_img, caption="Hasil Deteksi", use_column_width=True)
-        with col2:
-            if results:
-                st.subheader("Detail Hasil")
-                for i, res in enumerate(results):
-                    st.write(f"**Wajah {i+1}**:")
-                    st.write(f"- Emosi: {res['emotion']}")
-                    st.write(f"- Akurasi: {res['confidence']*100:.2f}%")
-            else:
-                st.warning("Tidak terdeteksi wajah!")
-
-else:
-    st.write("Tekan tombol di bawah untuk mulai deteksi via webcam")
-    run_webcam = st.checkbox("Jalankan Webcam")
-    
-    FRAME_WINDOW = st.image([])
-    cap = cv2.VideoCapture(0)
-    
-    while run_webcam:
-        ret, frame = cap.read()
-        if not ret:
-            st.error("Gagal mengakses webcam")
-            break
+        # Konversi ke grayscale
+        gray_img = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
-        # Flip horizontal untuk mirror effect
-        frame = cv2.flip(frame, 1)
+        # Deteksi wajah
+        faces = face_cascade.detectMultiScale(gray_img, 1.1, 4)
         
-        # Deteksi wajah dan emosi
-        processed_frame, _ = detect_and_predict(frame)
-        
-        # Tampilkan frame
-        FRAME_WINDOW.image(processed_frame, channels="BGR")
-    
-    cap.release()
-    if not run_webcam:
-        st.info("Webcam dihentikan")
-
-# Catatan Kaki
-st.markdown("---")
-st.caption("Aplikasi deteksi emosi dengan Haar Cascade | Model: ONNX | Dibuat dengan Streamlit")
+        if len(faces) == 0:
+            st.warning("Tidak terdeteksi wajah")
+        else:
+            for (x, y, w, h) in faces:
+                # Ekstrak ROI wajah
+                face_roi = gray_img[y:y+h, x:x+w]
+                face_roi = cv2.resize(face_roi, (48, 48))
+                face_roi = face_roi.astype(np.float32) / 255.0
+                face_roi = np.expand_dims(face_roi, axis=(0, -1))  # Shape: (1, 48, 48, 1)
+                
+                # Prediksi dengan ONNX Runtime
+                input_name = ort_session.get_inputs()[0].name
+                output_name = ort_session.get_outputs()[0].name
+                pred = ort_session.run([output_name], {input_name: face_roi})[0][0]
+                
+                emotion_idx = np.argmax(pred)
+                emotion = emotion_labels[emotion_idx]
+                confidence = pred[emotion_idx]
+                
+                # Gambar bounding box
+                cv2.rectangle(image, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                cv2.putText(image, f"{emotion} ({confidence:.2f})", 
+                           (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            
+            st.image(image, channels="BGR", use_column_width=True)
+            
+            # Tampilkan detail prediksi
+            st.subheader("Probabilitas Emosi:")
+            for label, prob in zip(emotion_labels, pred):
+                st.progress(float(prob), text=f"{label}: {prob:.4f}")
+                
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
