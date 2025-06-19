@@ -4,64 +4,61 @@ import numpy as np
 import onnxruntime as ort
 import os
 
-# Konfigurasi
-st.set_page_config(page_title="Deteksi Ekspresi Wajah", page_icon="😊")
+# 1. ===== SETUP DASAR =====
+st.set_page_config(page_title="Deteksi Emosi", layout="centered")
 
+# 2. ===== LOAD MODEL (DENGAN ERROR HANDLING) =====
 @st.cache_resource
-def load_model():
+def init_model():
     try:
-        return ort.InferenceSession('emotion_model.onnx')
+        # Pastikan file ada
+        if not os.path.exists('emotion_model.onnx'):
+            st.error("File model ONNX tidak ditemukan!")
+            st.stop()
+            
+        # Inisialisasi ONNX Runtime
+        sess = ort.InferenceSession('emotion_model.onnx',
+                                  providers=['CPUExecutionProvider'])
+        return sess
     except Exception as e:
-        st.error(f"Gagal memuat model: {str(e)}")
+        st.error(f"GAGAL MEMUAT MODEL: {str(e)}")
         st.stop()
 
-@st.cache_resource
-def load_cascade():
-    try:
-        return cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
-    except Exception as e:
-        st.error(f"Gagal memuat Haar Cascade: {str(e)}")
-        st.stop()
+# 3. ===== DETEKSI WAJAH =====
+def detect_faces(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
+    faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+    return faces, gray
 
-# Periksa file
-if not all(os.path.exists(f) for f in ['emotion_model.onnx', 'haarcascade_frontalface_default.xml']):
-    st.error("File model atau Haar Cascade tidak ditemukan!")
-    st.stop()
+# 4. ===== PREPROCESSING =====
+def preprocess_face(face_roi):
+    face_roi = cv2.resize(face_roi, (48, 48))
+    face_roi = face_roi.astype(np.float32) / 255.0
+    return np.expand_dims(face_roi, axis=(0, -1))  # Shape: (1, 48, 48, 1)
 
-# Muat model dan cascade
-model = load_model()
-face_cascade = load_cascade()
+# 5. ===== ANTARMUKA UTAMA =====
+model = init_model()
+emotion_labels = ['Marah', 'Jijik', 'Takut', 'Senang', 'Sedih', 'Terkejut', 'Netral']
 
-# Label emosi
-emotions = ['Marah', 'Jijik', 'Takut', 'Senang', 'Sedih', 'Terkejut', 'Netral']
+st.title("APLIKASI DETEKSI EMOSI")
+uploaded_file = st.file_uploader("Unggah gambar wajah", type=["jpg", "jpeg", "png"])
 
-# UI
-st.title("Deteksi Ekspresi Wajah")
-uploaded_file = st.file_uploader("Pilih gambar wajah...", type=["jpg", "jpeg", "png"])
-
-if uploaded_file is not None:
+if uploaded_file:
     try:
         # Baca gambar
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         
-        if img is None:
-            st.error("Format gambar tidak didukung")
-            st.stop()
-            
         # Deteksi wajah
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+        faces, gray = detect_faces(img)
         
         if len(faces) == 0:
-            st.warning("Wajah tidak terdeteksi")
+            st.warning("Tidak terdeteksi wajah")
         else:
             for (x, y, w, h) in faces:
                 # Preprocessing
-                face = gray[y:y+h, x:x+w]
-                face = cv2.resize(face, (48, 48))
-                face = face.astype('float32') / 255.0
-                face = np.expand_dims(face, axis=(0, -1))
+                face = preprocess_face(gray[y:y+h, x:x+w])
                 
                 # Prediksi
                 input_name = model.get_inputs()[0].name
@@ -69,22 +66,17 @@ if uploaded_file is not None:
                 pred = outputs[0][0]
                 
                 # Hasil
-                emotion = emotions[np.argmax(pred)]
-                confidence = np.max(pred)
-                
-                # Gambar bounding box
+                emotion = emotion_labels[np.argmax(pred)]
                 cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                cv2.putText(img, f"{emotion} ({confidence:.2f})", 
-                           (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+                cv2.putText(img, emotion, (x, y-10), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
             
-            # Tampilkan hasil
-            st.image(img, channels="BGR", use_column_width=True)
+            st.image(img, channels="BGR", caption="Hasil Deteksi")
             
-            # Tampilkan detail
-            st.subheader("Detail Prediksi:")
-            for i, (emotion, prob) in enumerate(zip(emotions, pred)):
-                st.write(f"{emotion}: {prob:.4f}")
-                st.progress(float(prob))
+            # Tampilkan probabilitas
+            st.subheader("Kemungkinan Emosi:")
+            for label, prob in zip(emotion_labels, pred):
+                st.write(f"{label}: {prob:.4f}")
                 
     except Exception as e:
-        st.error(f"Error: {str(e)}")
+        st.error(f"ERROR: {str(e)}")
